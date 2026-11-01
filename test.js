@@ -41,7 +41,7 @@ function parseWithBigInt(raw) {
 //      same source CI fetches from).
 // If no source yields both suites, or a suite has the wrong vector count,
 // exit 1. A partial or shrunken suite must fail loudly, never pass silently.
-const SPEC_COMMIT = '28999d74bc1f229d4e3e6ed0d6542a208ae0b8c2';
+const SPEC_COMMIT = '4023615eb8f0090e5849fad2605412dfcf2a6623';
 const V01_COUNT = 13;
 const V02_COUNT = 8;
 
