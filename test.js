@@ -309,3 +309,8 @@ test('erratum 2026-11-15 (second part): lock requires created_at as YYYY-MM-DDTH
   assert.match(newManifestErrors(m)[0], /YYYY-MM-DDTHH:MM:SSZ/);
   assert.deepEqual(newManifestErrors(parseManifest(baseJson(), 'json')), []);
 });
+
+test('erratum 2026-11-15 (third part): code is an optional mapping (spec §2.2)', () => {
+  assert.deepEqual(validateManifest(JSON.parse(baseJson('"code": {"id": "eval.py", "hash": "' + 'a'.repeat(64) + '"}'))), []);
+  assert.ok(validateManifest(JSON.parse(baseJson('"code": "eval.py"'))).includes('code must be a mapping'));
+});

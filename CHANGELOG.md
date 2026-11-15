@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed (PRML v0.1 erratum 2026-11-15, third part)
+- `code` is accepted as an optional mapping, as spec §2.2 lists it; any other type is rejected.
+
 ## [0.4.0] - 2026-11-15
 
 Follows the second part of the PRML v0.1 erratum of 2026-11-15 (falsify 0.7.0 on PyPI). CI runs the edge suite (113 vectors) and the reject suite (60) at the falsify release commit.

@@ -345,7 +345,7 @@ function validateManifest(m) {
   // with the published JSON Schema, or "validated PRML" is ambiguous.
   const UUIDV7 = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-7[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/;
   const RFC3339 = /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d+)?([Zz]|[+-]\d{2}:\d{2})$/;
-  const TOP_KEYS = new Set(['version','claim_id','created_at','metric','comparator','threshold','dataset','seed','producer','model','compute_envelope','prior_hash','notes','metric_args']);
+  const TOP_KEYS = new Set(['version','claim_id','created_at','metric','comparator','threshold','dataset','seed','producer','model','compute_envelope','prior_hash','notes','metric_args','code']);
   if (typeof m.claim_id === 'string' && !UUIDV7.test(m.claim_id)) {
     errors.push('claim_id must be a UUIDv7 (schema pattern: version nibble 7, variant 8/9/a/b)');
   }
@@ -390,7 +390,7 @@ function typeErrors(m) {
   for (const f of ['claim_id', 'created_at', 'metric', 'comparator']) {
     if (f in m && typeof m[f] !== 'string') errors.push(`${f} must be a string`);
   }
-  for (const f of ['dataset', 'producer', 'model', 'metric_args', 'compute_envelope']) {
+  for (const f of ['dataset', 'producer', 'model', 'metric_args', 'compute_envelope', 'code']) {
     if (f in m && !isMapping(m[f])) errors.push(`${f} must be a mapping`);
   }
   const subs = { dataset: ['id', 'hash', 'uri'], producer: ['id', 'signature'], model: ['id', 'hash', 'uri'] };
