@@ -196,3 +196,80 @@ test('linkage: chronology violation is caught', () => {
   assert.equal(report.ok, false);
   assert.equal(report.failures[0].check, 'chronology');
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// PRML v0.1 erratum 2026-11-15: reading and canonical forms. The full case list
+// is falsify-hackathon/tests/fixtures/erratum-2026-11-15-cases.json; these are
+// the JavaScript-specific ones.
+// ─────────────────────────────────────────────────────────────────────────
+const { parseManifest } = require('./falsify.js');
+const BASE_YAML = [
+  'version: prml/0.1', 'claim_id: 01900000-0000-7000-8000-000000000000',
+  "created_at: '2026-05-01T12:00:00Z'", 'metric: accuracy', "comparator: '>='",
+  'threshold: 0.85', 'dataset:', '  id: ds',
+  '  hash: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+  'seed: 42', 'producer:', '  id: falsify.dev', '',
+].join('\n');
+const baseJson = (extra) => JSON.stringify({
+  version: 'prml/0.1', claim_id: '01900000-0000-7000-8000-000000000000', created_at: '2026-05-01T12:00:00Z',
+  metric: 'accuracy', comparator: '>=', threshold: 0.85,
+  dataset: { id: 'ds', hash: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855' },
+  seed: 42, producer: { id: 'falsify.dev' },
+}).slice(0, -1) + (extra ? ', ' + extra : '') + '}';
+const canonOf = (text, fmt) => {
+  const m = parseManifest(text, fmt);
+  assert.deepEqual(validateManifest(m), []);
+  return canonicalize(m);
+};
+const rejects = (text, fmt) => {
+  let errs;
+  try { errs = validateManifest(parseManifest(text, fmt)); } catch (e) { return; }
+  assert.notDeepEqual(errs, [], 'expected a rejection');
+};
+
+test('erratum 2026-11-15: a float spelled 1.0 renders 1.0, an integer 1 renders 1 (JSON and YAML)', () => {
+  assert.match(canonOf(baseJson('"metric_args": {"t": 1.0, "k": 1, "z": -0.0}'), 'json'), /\n  k: 1\n  t: 1\.0\n  z: -0\.0\n/);
+  assert.match(canonOf(BASE_YAML + 'metric_args:\n  t: 1.0\n  k: 1\n', 'yaml'), /\n  k: 1\n  t: 1\.0\n/);
+});
+
+test('erratum 2026-11-15: integers beyond 2^53-1 stay exact (JSON and YAML)', () => {
+  assert.match(canonOf(baseJson('"metric_args": {"k": 18446744073709551617}'), 'json'), /k: 18446744073709551617\n/);
+  assert.match(canonOf(BASE_YAML.replace('seed: 42', 'seed: 18446744073709551615'), 'yaml'), /seed: 18446744073709551615\n/);
+});
+
+test('erratum 2026-11-15: empty mapping and sequence render {} and []', () => {
+  const c = canonOf(baseJson('"metric_args": {"a": {}, "l": [], "i": [{}]}'), 'json');
+  assert.match(c, /\n  a: \{\}\n  i:\n  - \{\}\n  l: \[\]\n/);
+});
+
+test('erratum 2026-11-15: YAML numbers must be spelled as JSON numbers; timestamps must be quoted', () => {
+  for (const sp of ['010', '0x1F', '0o17', '1_000', '1:30', '.5', '5.', '+1']) {
+    assert.throws(() => parseManifest(BASE_YAML + `metric_args:\n  k: ${sp}\n`, 'yaml'), /JSON number/, sp);
+  }
+  assert.throws(() => parseManifest(BASE_YAML + 'metric_args:\n  d: 2026-05-01\n', 'yaml'), /unquoted timestamp/);
+  assert.match(canonOf(BASE_YAML + "metric_args:\n  k: 1e3\n  q: '010'\n", 'yaml'), /k: 1000\.0\n  q: '010'\n/);
+});
+
+test('erratum 2026-11-15: rejections (non-finite, seed range, nested sequence, depth, lone surrogate, float seed)', () => {
+  rejects(BASE_YAML + 'metric_args:\n  k: .inf\n', 'yaml');
+  rejects(baseJson().replace('"seed":42', '"seed":-1'), 'json');
+  rejects(baseJson().replace('"seed":42', '"seed":18446744073709551616'), 'json');
+  rejects(baseJson().replace('"seed":42', '"seed":42.0'), 'json');
+  rejects(baseJson('"metric_args": {"m": [[1, 2]]}'), 'json');
+  rejects(baseJson('"metric_args": ' + '{"a": '.repeat(100) + '1' + '}'.repeat(100)), 'json');
+  rejects(baseJson('"notes": "a\\ud800b"'), 'json');
+  assert.throws(() => parseManifest(baseJson() + ' {}', 'json'));
+});
+
+test('erratum 2026-11-15: constructor, prototype and __proto__ are ordinary keys', () => {
+  const m = parseManifest(baseJson('"metric_args": {"constructor": 1, "prototype": 2, "__proto__": 3}'), 'json');
+  assert.equal(Object.getPrototypeOf(m.metric_args), Object.prototype);
+  assert.match(canonicalize(m), /\n  __proto__: 3\n  constructor: 1\n  prototype: 2\n/);
+});
+
+test('erratum 2026-11-15: TV-006 (2^64-1 seed) hashes to its published value when read from text', () => {
+  const v = VECTORS.find((x) => x.id === 'TV-006');
+  const text = JSON.stringify(v.input, (k, val) => (typeof val === 'bigint' ? `__BIG__${val}` : val))
+    .replace(/"__BIG__(\d+)"/g, '$1');
+  assert.equal(manifestHash(parseManifest(text, 'json')), v.expected_hash || v.hash);
+});

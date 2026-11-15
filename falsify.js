@@ -147,12 +147,15 @@ function renderScalar(v, hint) {
     }
   }
   if (typeof v === 'boolean') return v ? 'true' : 'false';
+  // A float field (v0.1 `threshold`) holds a float64 even when spelled as a big integer.
+  if (typeof v === 'bigint' && hint === 'float') v = Number(v);
   if (typeof v === 'bigint') return v.toString();
   if (typeof v === 'number') {
     if (!Number.isFinite(v)) {
       if (Number.isNaN(v)) return '.nan';
       return v > 0 ? '.inf' : '-.inf';
     }
+    if (hint === 'float' && Object.is(v, -0)) return '-0.0';
     if (hint === 'float' && Number.isInteger(v)) {
       // Large integer-valued floats (|v| >= 1e16) must render in Python's
       // exponential form ("1.0e+20"), not toFixed ("100000000000000000000.0").
@@ -169,20 +172,43 @@ function renderScalar(v, hint) {
   throw new Error('renderScalar: unsupported value type ' + typeof v);
 }
 
+// §C5 applies to keys as well as values (spec/grammar/README.md): a key that
+// is not a plain scalar renders single-quoted, exactly as a value would.
+function renderKey(k) {
+  return needsQuoting(k) ? quoteSingle(k) : k;
+}
+
+// §C2: keys sort by Unicode code point (the same order as UTF-8 bytes).
+// Array.prototype.sort() compares UTF-16 code units, which puts a key above
+// U+FFFF (a surrogate pair) before a key in U+E000..U+FFFF.
+function byCodePoint(a, b) {
+  const x = Array.from(a, (c) => c.codePointAt(0));
+  const y = Array.from(b, (c) => c.codePointAt(0));
+  const n = Math.min(x.length, y.length);
+  for (let i = 0; i < n; i++) if (x[i] !== y[i]) return x[i] - y[i];
+  return x.length - y.length;
+}
+
 function renderMapping(obj, indent, floatFields, opts) {
-  const keys = Object.keys(obj).sort();
+  const keys = Object.keys(obj).sort(byCodePoint);
   const lines = [];
   const pad = ' '.repeat(indent);
   for (const k of keys) {
     const v = obj[k];
+    const rk = renderKey(k);
     if (v !== null && typeof v === 'object' && !Array.isArray(v) && typeof v !== 'bigint') {
-      lines.push(`${pad}${k}:`);
+      // §C8: an empty mapping renders `{}` and an empty sequence `[]`.
+      if (Object.keys(v).length === 0) { lines.push(`${pad}${rk}: {}`); continue; }
+      lines.push(`${pad}${rk}:`);
       lines.push(renderMapping(v, indent + 2, floatFields, opts));
     } else if (Array.isArray(v)) {
-      lines.push(`${pad}${k}:`);
-      for (const item of v) {
-        const hint = floatFields.has(k) ? 'float' : null;
+      if (v.length === 0) { lines.push(`${pad}${rk}: []`); continue; }
+      lines.push(`${pad}${rk}:`);
+      for (let idx = 0; idx < v.length; idx++) {
+        const item = v[idx];
+        const hint = floatFields.has(k) || isFloatSpelled(v, idx) ? 'float' : null;
         if (item !== null && typeof item === 'object' && !Array.isArray(item)) {
+          if (Object.keys(item).length === 0) { lines.push(`${pad}- {}`); continue; }
           const sub = renderMapping(item, indent + 2, floatFields, opts);
           // Prefix first nested line with "- " instead of indent
           const padNested = ' '.repeat(indent + 2);
@@ -197,9 +223,10 @@ function renderMapping(obj, indent, floatFields, opts) {
         }
       }
     } else {
-      let hint = floatFields.has(k) ? 'float' : null;
+      // §C6 renders by type: a number spelled as a float stays a float (`1.0`).
+      let hint = floatFields.has(k) || isFloatSpelled(obj, k) ? 'float' : null;
       if (indent === 0 && k === 'threshold' && opts && opts.v02ThresholdByValue) hint = 'v02-threshold';
-      lines.push(`${pad}${k}: ${renderScalar(v, hint)}`);
+      lines.push(`${pad}${rk}: ${renderScalar(v, hint)}`);
     }
   }
   return lines.join('\n');
@@ -233,8 +260,10 @@ const VALID_COMPARATORS = new Set(['>=', '<=', '>', '<', '==']);
 // (U+2028/U+2029), and BOM (U+FEFF). They canonicalize inconsistently across YAML
 // engines, so a manifest carrying them is non-portable. Mirrors the Python
 // reference (_FORBIDDEN_CHARS in falsify_prml.py). Additive — no conformance
-// vector contains them, so no valid manifest's hash changes.
-const FORBIDDEN_CHARS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\ufeff]/;
+// vector contains them, so no valid manifest's hash changes. A lone surrogate
+// (a JSON "\ud800" escape with no pair) has no UTF-8 encoding at all and is
+// refused for the same reason.
+const FORBIDDEN_CHARS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\ufeff]|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
 
 function badCharFields(obj, path = '') {
   const out = [];
@@ -257,46 +286,6 @@ function badCharFields(obj, path = '') {
 // text read identically and hash differently, so the same claim would lock to two
 // hashes depending on the authoring platform. Rejected rather than normalized:
 // rewriting the text would change the bytes the author believes they locked.
-// JSON.parse is silently last-wins on a repeated name, and a reviver cannot see
-// the duplicate — the collapse happens first. So the raw text is scanned before
-// parsing: the manifest a human reads and the manifest the hash binds must be the
-// same document. RFC 7493 (I-JSON) §2.3 prohibits duplicate names for this reason.
-function assertNoDuplicateNames(raw) {
-  const stack = [];        // one Set of names per open object
-  let expectName = false;  // next string token is a name, not a value
-  let i = 0;
-  while (i < raw.length) {
-    const c = raw[i];
-    if (c === '{') { stack.push(new Set()); expectName = true; i++; continue; }
-    if (c === '}') { stack.pop(); expectName = false; i++; continue; }
-    if (c === '[') { expectName = false; i++; continue; }
-    if (c === ']') { expectName = false; i++; continue; }
-    if (c === ',') { expectName = stack.length > 0; i++; continue; }
-    if (c === ':') { expectName = false; i++; continue; }
-    if (c === '"') {
-      let j = i + 1, out = '';
-      while (j < raw.length && raw[j] !== '"') {
-        if (raw[j] === '\\') { out += raw[j] + raw[j + 1]; j += 2; }
-        else { out += raw[j]; j++; }
-      }
-      if (expectName && stack.length) {
-        // Unescape so "a" and "a" are recognised as the same name.
-        let name;
-        try { name = JSON.parse('"' + out + '"'); } catch { name = out; }
-        const seen = stack[stack.length - 1];
-        if (seen.has(name)) {
-          throw new SyntaxError(
-            `duplicate key "${name}" — a PRML manifest MUST NOT repeat a key`);
-        }
-        seen.add(name);
-      }
-      i = j + 1;
-      continue;
-    }
-    i++;
-  }
-}
-
 function nonNfcFields(obj, path = '') {
   const out = [];
   if (typeof obj === 'string') {
@@ -363,8 +352,12 @@ function validateManifest(m) {
   if (typeof m.metric === 'string' && (m.metric.length < 1 || m.metric.length > 256)) {
     errors.push('metric must be 1..256 characters');
   }
-  if (m.seed !== null && m.seed !== undefined && typeof m.seed !== 'bigint' && (typeof m.seed !== 'number' || !Number.isInteger(m.seed))) {
+  if (m.seed !== null && m.seed !== undefined && ((typeof m.seed !== 'bigint' && (typeof m.seed !== 'number' || !Number.isInteger(m.seed))) || isFloatSpelled(m, 'seed'))) {
     errors.push('seed must be an integer or null');
+  } else if (typeof m.seed === 'number' && !Number.isSafeInteger(m.seed)) {
+    errors.push('seed exceeds 2^53-1 and cannot be held exactly in a Number; pass it as a BigInt');
+  } else if ((typeof m.seed === 'number' || typeof m.seed === 'bigint') && (m.seed < 0 || BigInt(m.seed) >= 18446744073709551616n)) {
+    errors.push('seed must be a non-negative 64-bit integer (0 to 2^64-1)');
   }
   if (m.dataset && typeof m.dataset === 'object') {
     if (typeof m.dataset.id === 'string' && m.dataset.id.length < 1) errors.push('dataset.id must be non-empty');
@@ -381,6 +374,7 @@ function validateManifest(m) {
     errors.push('notes must be a string of at most 4096 characters');
   }
   for (const k of Object.keys(m)) if (!TOP_KEYS.has(k)) errors.push(`${k}: unknown top-level field (schema additionalProperties: false)`);
+  errors.push(...structuralErrors(m));
   return errors;
 }
 
@@ -435,30 +429,256 @@ function cmdInit(name) {
 
 // Reject prototype-polluting keys anywhere in a parsed manifest. Returns the
 // object unchanged if clean; throws otherwise. Bounded depth as a DoS guard.
-function assertNoProtoKeys(o, depth) {
-  depth = depth || 0;
-  if (depth > 100) throw new Error('manifest nesting too deep');
-  if (o && typeof o === 'object') {
-    for (const k of Object.keys(o)) {
-      if (k === '__proto__' || k === 'constructor' || k === 'prototype') {
-        throw new Error('manifest contains a disallowed key: ' + k);
-      }
-      assertNoProtoKeys(o[k], depth + 1);
-    }
+// ─────────────────────────────────────────────────────────────────────────
+// Input layer: one closed reading of JSON and YAML, shared with the Python
+// reference (falsify_prml.py) and the registry (canonical.js).
+//
+// - Numbers. A JSON number token, or in YAML a plain scalar spelled exactly as
+//   a JSON number, is a number: an integer spelling is an integer (exact at any
+//   magnitude: BigInt beyond 2^53-1), a spelling with a fraction or exponent is
+//   a float64. YAML also reads `.inf`/`.nan` (rejected later as non-finite).
+//   Any other plain scalar that YAML 1.1 or YAML 1.2 would type as a number
+//   (`010`, `0x1F`, `1_000`, `1:30`, `.5`, `5.`, `+1`) is rejected: readers
+//   disagree on its value. Quote it to make it a string.
+// - An unquoted YAML timestamp is rejected; quote it.
+// - Float spelling is remembered (FLOAT_SPELLED): `1.0` renders `1.0` and `1`
+//   renders `1`, as in the other implementations (§C6 renders by type).
+// - At most MAX_DEPTH levels of mappings and sequences (the root is level 1).
+// ─────────────────────────────────────────────────────────────────────────
+
+const MAX_DEPTH = 100;
+const JSON_INT = /^-?(?:0|[1-9][0-9]*)$/;
+const JSON_FLOAT = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][-+]?[0-9]+)?$/;
+const SPECIAL_FLOAT = /^(?:[-+]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN))$/;
+const NUMBER_LIKE = [
+  // YAML 1.1 int and float (PyYAML resolvers)
+  /^(?:[-+]?0b[0-1_]+|[-+]?0[0-7_]+|[-+]?(?:0|[1-9][0-9_]*)|[-+]?0x[0-9a-fA-F_]+|[-+]?[1-9][0-9_]*(?::[0-5]?[0-9])+)$/,
+  /^(?:[-+]?(?:[0-9][0-9_]*)\.[0-9_]*(?:[eE][-+][0-9]+)?|\.[0-9][0-9_]*(?:[eE][-+][0-9]+)?|[-+]?[0-9][0-9_]*(?::[0-5]?[0-9])+\.[0-9_]*)$/,
+  // YAML 1.2 core int and float
+  /^[-+]?(?:[0-9]+|0b[01]+|0o[0-7]+|0x[0-9a-fA-F]+)$/,
+  /^(?:[-+]?[0-9]+(?:\.[0-9]*)?(?:[eE][-+]?[0-9]+)?|\.[0-9]+(?:[eE][-+]?[0-9]+)?)$/,
+];
+const YAML_TIMESTAMP = /^(?:[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]|[0-9][0-9][0-9][0-9]-[0-9][0-9]?-[0-9][0-9]?(?:[Tt]|[ \t]+)[0-9][0-9]?:[0-9][0-9]:[0-9][0-9](?:\.[0-9]*)?(?:[ \t]*(?:Z|[-+][0-9][0-9]?(?::[0-9][0-9])?))?)$/;
+
+// parent object/array -> Set of keys (indices for arrays) whose number was
+// spelled as a float. Values stay plain Numbers, so every other check is unchanged.
+const FLOAT_SPELLED = new WeakMap();
+function markFloat(parent, key) {
+  let s = FLOAT_SPELLED.get(parent);
+  if (!s) { s = new Set(); FLOAT_SPELLED.set(parent, s); }
+  s.add(key);
+}
+function isFloatSpelled(parent, key) {
+  const s = parent && typeof parent === 'object' ? FLOAT_SPELLED.get(parent) : undefined;
+  return !!(s && s.has(key));
+}
+
+function setOwn(obj, k, v) {
+  // An own data property, even for "__proto__": never the prototype setter.
+  if (k === '__proto__') Object.defineProperty(obj, k, { value: v, writable: true, enumerable: true, configurable: true });
+  else obj[k] = v;
+}
+
+function numberFromSpelling(tok) {
+  if (JSON_INT.test(tok)) {
+    const n = Number(tok);
+    if (Number.isSafeInteger(n)) return { v: n === 0 ? 0 : n, float: false };
+    return { v: BigInt(tok), float: false };
   }
-  return o;
+  return { v: Number(tok), float: true };
+}
+
+// parseJsonStrict: RFC 8259 JSON with no tolerance: no duplicate names, nothing
+// after the value, depth limited, numbers read from their spelling. Strings are
+// decoded by JSON.parse on the exact token. Same behaviour on every Node.js version.
+function parseJsonStrict(text) {
+  let i = 0;
+  const fail = (msg) => { throw new SyntaxError(`${msg} at position ${i}`); };
+  const ws = () => { while (i < text.length && (text[i] === ' ' || text[i] === '\t' || text[i] === '\n' || text[i] === '\r')) i++; };
+  function str() {
+    const start = i++;
+    while (i < text.length && text[i] !== '"') {
+      const c = text.charCodeAt(i);
+      if (c < 0x20) fail('Bad control character in string literal');
+      i += text[i] === '\\' ? 2 : 1;
+    }
+    if (i >= text.length) fail('Unterminated string in JSON');
+    i++;
+    return JSON.parse(text.slice(start, i));
+  }
+  function value(parent, key, depth) {
+    ws();
+    const c = text[i];
+    if (c === '{' || c === '[') {
+      if (depth > MAX_DEPTH) throw new Error('manifest nesting too deep');
+      i++;
+      if (c === '{') {
+        const obj = {};
+        const seen = new Set();
+        ws();
+        if (text[i] === '}') { i++; return obj; }
+        for (;;) {
+          ws();
+          if (text[i] !== '"') fail('Expected property name');
+          const k = str();
+          if (seen.has(k)) throw new SyntaxError(`duplicate key "${k}" — a PRML manifest MUST NOT repeat a key`);
+          seen.add(k);
+          ws();
+          if (text[i] !== ':') fail("Expected ':' after property name");
+          i++;
+          setOwn(obj, k, value(obj, k, depth + 1));
+          ws();
+          if (text[i] === ',') { i++; continue; }
+          if (text[i] === '}') { i++; return obj; }
+          fail("Expected ',' or '}'");
+        }
+      }
+      const arr = [];
+      ws();
+      if (text[i] === ']') { i++; return arr; }
+      for (;;) {
+        arr.push(value(arr, arr.length, depth + 1));
+        ws();
+        if (text[i] === ',') { i++; continue; }
+        if (text[i] === ']') { i++; return arr; }
+        fail("Expected ',' or ']'");
+      }
+    }
+    if (c === '"') return str();
+    if (text.startsWith('true', i)) { i += 4; return true; }
+    if (text.startsWith('false', i)) { i += 5; return false; }
+    if (text.startsWith('null', i)) { i += 4; return null; }
+    const m = /-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][-+]?[0-9]+)?/y;
+    m.lastIndex = i;
+    const hit = m.exec(text);
+    if (!hit || hit[0] === '-') fail('Unexpected token in JSON');
+    i += hit[0].length;
+    const n = numberFromSpelling(hit[0]);
+    if (n.float) markFloat(parent, key);
+    return n.v;
+  }
+  const holder = {};
+  const v = value(holder, '', 1);
+  ws();
+  if (i !== text.length) fail('Unexpected non-whitespace character after JSON');
+  return v;
+}
+
+class FloatSpelled {
+  constructor(v) { this.v = v; }
+  get [Symbol.toStringTag]() { return 'PrmlFloat'; }
+  toString() { return String(this.v); }
+}
+
+let _yamlSchema = null;
+// Works with js-yaml 4 (falsify-js, CDN pages) and js-yaml 5 (the registry).
+function prmlYamlSchema(yaml) {
+  if (_yamlSchema && _yamlSchema.lib === yaml) return _yamlSchema.schema;
+  const badNumberMsg = (d) => `'${d}' is not a JSON number spelling and YAML readers disagree on its value; write it as a JSON number, or quote it for a string`;
+  const badTimestampMsg = (d) => `unquoted timestamp '${d}': quote it (YAML readers disagree on its value)`;
+  // Implicitly, an integer spelling is taken by the int tag first; an explicit
+  // `!!float 1` reaches this tag and reads as the float 1.0 (as in Python).
+  const isFloatSpelling = (d) => JSON_FLOAT.test(d) || SPECIAL_FLOAT.test(d);
+  const floatValue = (d) => {
+    if (SPECIAL_FLOAT.test(d)) return /nan/i.test(d) ? NaN : (d[0] === '-' ? -Infinity : Infinity);
+    return new FloatSpelled(Number(d));
+  };
+  let schema;
+  if (typeof yaml.defineScalarTag === 'function') {
+    const NR = yaml.NOT_RESOLVED;
+    const S = (tag, fn) => yaml.defineScalarTag(tag, { implicit: true, identify: () => false, resolve: (d) => fn(d) });
+    const keyOf = (k) => (k instanceof FloatSpelled ? String(k.v) : k);
+    const M = yaml.mapTag;
+    const mapT = yaml.defineMappingTag('tag:yaml.org,2002:map', {
+      create: M.create, identify: M.identify, represent: M.represent, keys: M.keys, get: M.get,
+      addPair: (c, k, v) => M.addPair(c, keyOf(k), v),
+      has: (c, k) => M.has(c, keyOf(k)),
+    });
+    schema = new yaml.Schema([
+      yaml.strTag, yaml.seqTag, mapT, yaml.nullCoreTag, yaml.boolCoreTag,
+      S('tag:yaml.org,2002:int', (d) => (JSON_INT.test(d) ? numberFromSpelling(d).v : NR)),
+      S('tag:yaml.org,2002:float', (d) => (isFloatSpelling(d) ? floatValue(d) : NR)),
+      S('tag:falsify.dev,2026:number-spelling', (d) => { if (NUMBER_LIKE.some((re) => re.test(d))) throw new Error(badNumberMsg(d)); return NR; }),
+      S('tag:falsify.dev,2026:timestamp', (d) => { if (YAML_TIMESTAMP.test(d)) throw new Error(badTimestampMsg(d)); return NR; }),
+    ]);
+  } else {
+    const T = (tag, resolve, construct) => new yaml.Type(tag, { kind: 'scalar', resolve, construct });
+    schema = yaml.FAILSAFE_SCHEMA.extend({ implicit: [
+      yaml.types.null, yaml.types.bool,
+      T('tag:yaml.org,2002:int', (d) => JSON_INT.test(d), (d) => numberFromSpelling(d).v),
+      T('tag:yaml.org,2002:float', isFloatSpelling, floatValue),
+      T('tag:falsify.dev,2026:number-spelling', (d) => NUMBER_LIKE.some((re) => re.test(d)), (d) => { throw new Error(badNumberMsg(d)); }),
+      T('tag:falsify.dev,2026:timestamp', (d) => YAML_TIMESTAMP.test(d), (d) => { throw new Error(badTimestampMsg(d)); }),
+    ] });
+  }
+  _yamlSchema = { lib: yaml, schema };
+  return schema;
+}
+
+// parseYamlStrict: js-yaml with the schema above; float markers are replaced by
+// plain Numbers and recorded in FLOAT_SPELLED; depth limited.
+function parseYamlStrict(yaml, text) {
+  const doc = yaml.load(text, { schema: prmlYamlSchema(yaml) });
+  const seen = new Set();
+  (function walk(o, depth) {
+    if (!o || typeof o !== 'object' || o instanceof FloatSpelled) return;
+    if (depth > MAX_DEPTH || seen.has(o)) throw new Error('manifest nesting too deep');
+    seen.add(o);
+    const keys = Array.isArray(o) ? o.keys() : Object.keys(o);
+    for (const k of keys) {
+      const v = o[k];
+      if (v instanceof FloatSpelled) { setOwn(o, k, v.v); markFloat(o, k); } else walk(v, depth + 1);
+    }
+    seen.delete(o);
+  })(doc, 1);
+  return doc instanceof FloatSpelled ? doc.v : doc;
+}
+
+// structuralErrors: values with no canonical form, wherever they sit.
+function structuralErrors(m) {
+  const errors = [];
+  (function walk(o, path, depth, inSeq) {
+    if (typeof o === 'number') {
+      if (!Number.isFinite(o) && path !== 'threshold') errors.push(`${path}: number is not a finite float64`);
+      return;
+    }
+    if (!o || typeof o !== 'object') return;
+    if (depth > MAX_DEPTH) { errors.push(`${path}: nesting deeper than ${MAX_DEPTH} levels`); return; }
+    if (Array.isArray(o)) {
+      if (inSeq) errors.push(`${path}: a sequence inside a sequence has no canonical form`);
+      o.forEach((v, i) => walk(v, `${path}[${i}]`, depth + 1, true));
+    } else {
+      for (const k of Object.keys(o)) walk(o[k], path ? `${path}.${k}` : k, depth + 1, false);
+    }
+  })(m, '', 1, false);
+  return errors;
+}
+
+// Invalid UTF-8 is an error rather than being replaced with U+FFFD, as in the
+// other implementations. A BOM is kept, so the JSON reader still rejects it.
+function readUtf8Strict(filePath) {
+  return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(fs.readFileSync(filePath));
+}
+
+// parseManifest(text, format): the CLI's reading of a manifest, for library
+// callers who hold the text. format is 'json' or 'yaml'.
+function parseManifest(text, format) {
+  if (format === 'json') {
+    const parsed = parseJsonStrict(text);
+    if (parsed && typeof parsed.threshold === 'bigint') parsed.threshold = Number(parsed.threshold);
+    return parsed;
+  }
+  const parsed = parseYamlStrict(require('js-yaml'), text);
+  if (parsed && typeof parsed.threshold === 'bigint') parsed.threshold = Number(parsed.threshold);
+  return parsed;
 }
 
 function loadManifest(filePath) {
-  // Minimal YAML loader for our canonical format only.
-  // We intentionally do NOT use a generic YAML parser: round-tripping
-  // through one risks breaking determinism. For load-and-canonicalize
-  // workflows, prefer the Python reference impl which uses PyYAML.
-  // For now we require JSON input to this tool; YAML support requires js-yaml.
   if (filePath.endsWith('.json')) {
-    const raw = fs.readFileSync(filePath, 'utf-8');
-    assertNoDuplicateNames(raw);
-    return assertNoProtoKeys(JSON.parse(raw));
+    const parsed = parseJsonStrict(readUtf8Strict(filePath));
+    // §3.5: v0.1 threshold is a float64 whatever its spelling.
+    if (parsed && typeof parsed.threshold === 'bigint') parsed.threshold = Number(parsed.threshold);
+    return parsed;
   }
   // Otherwise use js-yaml. Declared dependency since 0.2.0: the canonical media
   // type is application/vnd.prml+yaml, so a verifier that cannot read YAML cannot
@@ -470,10 +690,11 @@ function loadManifest(filePath) {
   } catch (e) {
     throw new Error('YAML loading requires js-yaml (a declared dependency of falsify-js; reinstall the package, or run: npm install js-yaml). Or pass a .json file.');
   }
-  // CORE_SCHEMA: no custom/JS type tags (e.g. !!js/function) can be
-  // instantiated from untrusted manifest content.
-  const parsed = yaml.load(fs.readFileSync(filePath, 'utf-8'), { schema: yaml.CORE_SCHEMA });
-  return assertNoProtoKeys(parsed);
+  // The schema has only null, bool, int, float and str: no custom/JS type tags
+  // (e.g. !!js/function) can be instantiated from untrusted manifest content.
+  const parsed = parseYamlStrict(yaml, readUtf8Strict(filePath));
+  if (parsed && typeof parsed.threshold === 'bigint') parsed.threshold = Number(parsed.threshold);
+  return parsed;
 }
 
 function cmdLock(filePath) {
@@ -539,22 +760,9 @@ function cmdVerify(filePath, observedStr) {
 }
 
 function cmdTestVectors(vectorsPath) {
-  const raw = fs.readFileSync(vectorsPath, 'utf-8');
-  // Substitute large integers with sentinel-wrapped strings before JSON.parse
-  // so we can preserve precision (JS Number loses precision above 2^53).
-  const wrapped = raw.replace(/(?<=[\s:,\[])(\-?\d{16,})(?=[\s,\]\}])/g, '"__BIGINT__$1"');
-  const vectors = JSON.parse(wrapped);
-  function unwrap(o) {
-    if (typeof o === 'string' && o.startsWith('__BIGINT__')) return BigInt(o.slice(10));
-    if (Array.isArray(o)) return o.map(unwrap);
-    if (o !== null && typeof o === 'object') {
-      const out = {};
-      for (const k of Object.keys(o)) out[k] = unwrap(o[k]);
-      return out;
-    }
-    return o;
-  }
-  for (const v of vectors) v.input = unwrap(v.input);
+  // The strict reader keeps every input as written: integers beyond 2^53-1 as
+  // BigInt and float spelling (`1.0`), which a vector may depend on.
+  const vectors = parseJsonStrict(readUtf8Strict(vectorsPath));
 
   let pass = 0, fail = 0;
   for (const v of vectors) {
@@ -644,6 +852,8 @@ if (require.main === module) {
 // Programmatic API for embedders
 module.exports = {
   canonicalize,
+  loadManifest,
+  parseManifest,
   manifestHash,
   validateManifest,
   evaluatePredicate,

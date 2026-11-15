@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- Mapping keys now follow the PRML §3.6 C5 plain-scalar rule, as the Python reference does: a key that is not a plain scalar renders single-quoted. Manifests whose free-form keys (`metric_args`, `model`, `compute_envelope`) need quoting now hash the same as in the other reference implementations; their falsify-js hash changes. No published vector changes.
+- Numbers are read from their spelling by a strict JSON reader of its own (same behaviour on every Node.js version) and a strict YAML schema: integers beyond 2^53-1 stay exact (BigInt), `seed: 42.0` is rejected, and a float written `1.0` renders `1.0` (§C6), as in the other reference implementations. A `seed` Number beyond 2^53-1 passed to `validateManifest` is reported (pass a BigInt). `loadManifest(path)` and `parseManifest(text, 'json' | 'yaml')` are now exported, so library callers get the same reading as the CLI; an object parsed elsewhere does not carry float spelling.
+- Input must be valid UTF-8, as in the Python and Rust implementations, and a lone surrogate (an unpaired `\ud800` escape) is rejected, as in Rust.
+- Keys sort by Unicode code point (§C2) when a key lies above U+FFFF.
+- `test-vectors` reads vector files with the strict reader: big integers and float spelling are kept as written. `loadManifest` and `parseManifest` are also exported from the ESM entry.
+- The duplicate-key check no longer treats a string inside an array as a key name: `["a", "b", "b"]` is accepted.
+
+### Changed (PRML v0.1 erratum 2026-11-15)
+- YAML input: a plain scalar is a number only when spelled as a JSON number; other numeric-looking plain scalars (`010`, `0x1F`, `1_000`, `.5`, `+1`) and unquoted timestamps are rejected. Quote them for a string.
+- Rejected: non-finite numbers in any field, a `seed` outside 0 to 2^64-1, a sequence directly inside a sequence, nesting deeper than 100 levels. Keys named `constructor`, `prototype` and `__proto__` are now accepted.
+- An empty mapping renders `{}` and an empty sequence `[]` (grammar C8); a float `-0.0` renders `-0.0` (grammar C4).
+
 ## [0.2.1] - 2026-11-02
 
 ### Changed
