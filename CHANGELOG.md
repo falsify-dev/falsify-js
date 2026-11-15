@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-15
+
+Follows the PRML v0.1 erratum of 2026-11-15 (falsify 0.6.0 on PyPI). CI runs the edge suite (108 vectors) and the reject suite (40) at the falsify release commit.
+
 ### Fixed
 - Mapping keys now follow the PRML §3.6 C5 plain-scalar rule, as the Python reference does: a key that is not a plain scalar renders single-quoted. Manifests whose free-form keys (`metric_args`, `model`, `compute_envelope`) need quoting now hash the same as in the other reference implementations; their falsify-js hash changes. No published vector changes.
 - Numbers are read from their spelling by a strict JSON reader of its own (same behaviour on every Node.js version) and a strict YAML schema: integers beyond 2^53-1 stay exact (BigInt), `seed: 42.0` is rejected, and a float written `1.0` renders `1.0` (§C6), as in the other reference implementations. A `seed` Number beyond 2^53-1 passed to `validateManifest` is reported (pass a BigInt). `loadManifest(path)` and `parseManifest(text, 'json' | 'yaml')` are now exported, so library callers get the same reading as the CLI; an object parsed elsewhere does not carry float spelling.
