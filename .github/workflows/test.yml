@@ -12,7 +12,7 @@ env:
   # spec-repo change can never silently alter what this CI tests. Bump it
   # deliberately.
   #
-  SPEC_COMMIT: 20adc3bd2123859f49dfe70cf983ed9a23440bc6
+  SPEC_COMMIT: 3c81d53f7486d1f981203dcbed3366d73fe49f4c
 
 jobs:
   test:
@@ -50,7 +50,7 @@ jobs:
           PRML_VECTORS_DIR: ${{ github.workspace }}/vectors
 
 
-      - name: Edge suite (113 vectors, spec §3.6 grammar)
+      - name: Edge suite (114 vectors, spec §3.6 grammar)
 
         run: node falsify.js test-vectors vectors/edge/edge-vectors.json
 

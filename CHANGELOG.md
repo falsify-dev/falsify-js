@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-15
+
+Follows the third part of the PRML v0.1 erratum of 2026-11-15 (falsify 0.7.1 on PyPI); CI runs the 114-vector edge suite.
+
 ### Changed (PRML v0.1 erratum 2026-11-15, third part)
 - `code` is accepted as an optional mapping, as spec §2.2 lists it; any other type is rejected.
 
