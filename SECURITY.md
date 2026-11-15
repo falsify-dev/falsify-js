@@ -14,7 +14,9 @@ There is no bug bounty. Credit is given in the changelog if you want it.
 
 | Version | Supported |
 |---|---|
-| 0.2.x (current) | yes |
+| 0.4.x (current) | yes |
+| 0.3.x | no — superseded the same day by 0.4.x (PRML v0.1 erratum 2026-11-15); upgrade |
+| 0.2.x | no — affected by the canonicalization issues fixed in 0.3.0 (see the security advisory); upgrade |
 | 0.1.x | no — 0.1.13 and earlier cannot read YAML from a clean install and disagree with the reference canonicalizer on edge inputs; upgrade |
 
 ## Trust model
