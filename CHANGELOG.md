@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-15
+
+Follows the second part of the PRML v0.1 erratum of 2026-11-15 (falsify 0.7.0 on PyPI). CI runs the edge suite (113 vectors) and the reject suite (60) at the falsify release commit.
+
 ### Changed (PRML v0.1 erratum 2026-11-15, second part)
 - YAML mapping keys must be strings: `1:`, `true:`, `~:`, `1.5:` and sequence or mapping keys are rejected (js-yaml 4 and 5). Quote the key for a string.
 - U+FFFE, U+FFFF and U+10FFFF are rejected in any string or key.
