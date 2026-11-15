@@ -206,7 +206,7 @@ function renderMapping(obj, indent, floatFields, opts) {
       lines.push(`${pad}${rk}:`);
       for (let idx = 0; idx < v.length; idx++) {
         const item = v[idx];
-        const hint = floatFields.has(k) || isFloatSpelled(v, idx) ? 'float' : null;
+        const hint = (floatFields.has(k) && (k !== 'threshold' || indent === 0)) || isFloatSpelled(v, idx) ? 'float' : null;
         if (item !== null && typeof item === 'object' && !Array.isArray(item)) {
           if (Object.keys(item).length === 0) { lines.push(`${pad}- {}`); continue; }
           const sub = renderMapping(item, indent + 2, floatFields, opts);
@@ -224,7 +224,10 @@ function renderMapping(obj, indent, floatFields, opts) {
       }
     } else {
       // §C6 renders by type: a number spelled as a float stays a float (`1.0`).
-      let hint = floatFields.has(k) || isFloatSpelled(obj, k) ? 'float' : null;
+      // The float-field rule applies to the root `threshold` only (grammar G4,
+      // erratum 2026-11-15); a nested `threshold` renders by its spelling (C6).
+      // A linkage record's `result.observed` keeps its own float rule.
+      let hint = (floatFields.has(k) && (k !== 'threshold' || indent === 0)) || isFloatSpelled(obj, k) ? 'float' : null;
       if (indent === 0 && k === 'threshold' && opts && opts.v02ThresholdByValue) hint = 'v02-threshold';
       lines.push(`${pad}${rk}: ${renderScalar(v, hint)}`);
     }
@@ -263,7 +266,7 @@ const VALID_COMPARATORS = new Set(['>=', '<=', '>', '<', '==']);
 // vector contains them, so no valid manifest's hash changes. A lone surrogate
 // (a JSON "\ud800" escape with no pair) has no UTF-8 encoding at all and is
 // refused for the same reason.
-const FORBIDDEN_CHARS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\ufeff]|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+const FORBIDDEN_CHARS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\ufeff\ufffe\uffff]|\udbff\udfff|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
 
 function badCharFields(obj, path = '') {
   const out = [];
@@ -331,7 +334,7 @@ function validateManifest(m) {
   }
   for (const fld of badCharFields(m)) {
     errors.push(`${fld}: contains a control / non-portable character `
-      + `(C0/C1, U+007F, U+2028/U+2029, or U+FEFF) — not allowed in a PRML string field`);
+      + `(C0/C1, U+007F, U+2028/U+2029, U+FEFF, U+FFFE/U+FFFF/U+10FFFF or a lone surrogate) — not allowed in a PRML string field`);
   }
   for (const fld of nonNfcFields(m)) {
     errors.push(`${fld}: string is not in Unicode NFC — the same text in a `
@@ -375,7 +378,38 @@ function validateManifest(m) {
   }
   for (const k of Object.keys(m)) if (!TOP_KEYS.has(k)) errors.push(`${k}: unknown top-level field (schema additionalProperties: false)`);
   errors.push(...structuralErrors(m));
+  errors.push(...typeErrors(m));
   return errors;
+}
+
+// Field types of the published schema, checked wherever a field is present
+// (erratum 2026-11-15, second part). Same messages as the other references.
+const isMapping = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+function typeErrors(m) {
+  const errors = [];
+  for (const f of ['claim_id', 'created_at', 'metric', 'comparator']) {
+    if (f in m && typeof m[f] !== 'string') errors.push(`${f} must be a string`);
+  }
+  for (const f of ['dataset', 'producer', 'model', 'metric_args', 'compute_envelope']) {
+    if (f in m && !isMapping(m[f])) errors.push(`${f} must be a mapping`);
+  }
+  const subs = { dataset: ['id', 'hash', 'uri'], producer: ['id', 'signature'], model: ['id', 'hash', 'uri'] };
+  for (const [f, ks] of Object.entries(subs)) {
+    if (!isMapping(m[f])) continue;
+    for (const k of ks) if (k in m[f] && typeof m[f][k] !== 'string') errors.push(`${f}.${k} must be a string`);
+  }
+  // `model` keeps its other keys (`version` is common): only the types are checked.
+  return errors;
+}
+
+// A new manifest carries `created_at` in one spelling (spec §2.1: UTC, second
+// precision). `lock` enforces it; `hash` and `verify` still read manifests locked
+// before 2026-11-15 in any RFC 3339 spelling.
+function newManifestErrors(m) {
+  if (typeof m.created_at === 'string' && !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(m.created_at)) {
+    return [`created_at must be written YYYY-MM-DDTHH:MM:SSZ (UTC, second precision) in a new manifest, got '${m.created_at}'`];
+  }
+  return [];
 }
 
 
@@ -587,7 +621,7 @@ function prmlYamlSchema(yaml) {
   if (typeof yaml.defineScalarTag === 'function') {
     const NR = yaml.NOT_RESOLVED;
     const S = (tag, fn) => yaml.defineScalarTag(tag, { implicit: true, identify: () => false, resolve: (d) => fn(d) });
-    const keyOf = (k) => (k instanceof FloatSpelled ? String(k.v) : k);
+    const keyOf = (k) => { if (typeof k !== 'string') throw new Error(nonStringKeyMsg(k)); return k; };
     const M = yaml.mapTag;
     const mapT = yaml.defineMappingTag('tag:yaml.org,2002:map', {
       create: M.create, identify: M.identify, represent: M.represent, keys: M.keys, get: M.get,
@@ -615,10 +649,42 @@ function prmlYamlSchema(yaml) {
   return schema;
 }
 
+// A mapping key MUST be a string (erratum 2026-11-15): a number, boolean, null or
+// collection key reads differently in each YAML library.
+function nonStringKeyMsg(k) {
+  const shown = k instanceof FloatSpelled ? String(k.v) : Array.isArray(k) ? 'a sequence'
+    : (k !== null && typeof k === 'object') ? 'a mapping' : String(k);
+  return `mapping keys must be strings (quote the key): got ${shown}`;
+}
+
+// js-yaml 4 turns every key into a string before the schema sees it, so a key
+// is recognised by its position: a node whose next significant character is a
+// `:` indicator was read as a mapping key (implicit or explicit `?` form).
+function nonStringKeyListener(event, state) {
+  if (event !== 'close') return;
+  const r = state.result;
+  if (typeof r === 'string' && state.kind !== 'mapping' && state.kind !== 'sequence') return;
+  const t = state.input;
+  let i = state.position;
+  for (;;) {
+    while (i < t.length && (t[i] === ' ' || t[i] === '\t' || t[i] === '\n' || t[i] === '\r')) i++;
+    if (t[i] === '#') { while (i < t.length && t[i] !== '\n') i++; continue; }
+    break;
+  }
+  if (t[i] !== ':') return;
+  // After a collection or a quoted scalar a key's `:` may touch the next node
+  // (`{[a]:x}`, `{"1":x}`); after a plain scalar it needs a space or a flow
+  // indicator, since `1:x` is one plain scalar.
+  const adjacentOk = state.kind === 'mapping' || state.kind === 'sequence' || /["']/.test(t[state.position - 1]);
+  if (adjacentOk || i + 1 >= t.length || /[\s,\[\]{}]/.test(t[i + 1])) throw new Error(nonStringKeyMsg(r));
+}
+
 // parseYamlStrict: js-yaml with the schema above; float markers are replaced by
 // plain Numbers and recorded in FLOAT_SPELLED; depth limited.
 function parseYamlStrict(yaml, text) {
-  const doc = yaml.load(text, { schema: prmlYamlSchema(yaml) });
+  const opts = { schema: prmlYamlSchema(yaml) };
+  if (typeof yaml.defineScalarTag !== 'function') opts.listener = nonStringKeyListener;
+  const doc = yaml.load(text, opts);
   const seen = new Set();
   (function walk(o, depth) {
     if (!o || typeof o !== 'object' || o instanceof FloatSpelled) return;
@@ -699,7 +765,8 @@ function loadManifest(filePath) {
 
 function cmdLock(filePath) {
   const m = loadManifest(filePath);
-  const errors = validateManifest(m);
+  let errors = validateManifest(m);
+  if (!errors.length) errors = newManifestErrors(m);
   if (errors.length) {
     console.error('lock: invalid manifest:');
     errors.forEach(e => console.error('  - ' + e));
@@ -856,6 +923,7 @@ module.exports = {
   parseManifest,
   manifestHash,
   validateManifest,
+  newManifestErrors,
   evaluatePredicate,
   needsQuoting,
   EXIT_PASS, EXIT_BAD, EXIT_TAMPERED, EXIT_FAIL, EXIT_GUARD,

@@ -273,3 +273,39 @@ test('erratum 2026-11-15: TV-006 (2^64-1 seed) hashes to its published value whe
     .replace(/"__BIG__(\d+)"/g, '$1');
   assert.equal(manifestHash(parseManifest(text, 'json')), v.expected_hash || v.hash);
 });
+
+test('erratum 2026-11-15 (second part): mapping keys must be strings in YAML', () => {
+  for (const frag of ['1: a', 'true: a', 'null: a', '1.5: a', '? [a, b]\n  : c', '? {a: 1}\n  : c']) {
+    assert.throws(() => parseManifest(BASE_YAML + `metric_args:\n  ${frag}\n`, 'yaml'), /mapping keys must be strings/, frag);
+  }
+  assert.match(canonOf(BASE_YAML + "metric_args:\n  '1': a\n  'true': b\n", 'yaml'), /\n  '1': a\n  'true': b\n/);
+});
+
+test('erratum 2026-11-15 (second part): U+FFFE, U+FFFF and U+10FFFF are refused; other noncharacters are not', () => {
+  for (const esc of ['\\ufffe', '\\uffff', '\\udbff\\udfff']) rejects(baseJson(`"notes": "a${esc}b"`), 'json');
+  assert.equal(validateManifest(parseManifest(baseJson('"notes": "a\\ufdd0b"'), 'json')).length, 0);
+});
+
+test('erratum 2026-11-15 (second part): field types of the published schema', () => {
+  const cases = { comparator: null, metric: 123, dataset: '"x"', producer: null, claim_id: 5, created_at: 5, model: '"m"', metric_args: '[1]', notes: null, prior_hash: null };
+  for (const [k, v] of Object.entries(cases)) {
+    const m = JSON.parse(baseJson());
+    m[k] = typeof v === 'string' ? JSON.parse(v) : v;
+    assert.ok(validateManifest(m).length > 0, `${k}: ${JSON.stringify(m[k])} must be rejected`);
+  }
+  const ok = JSON.parse(baseJson('"model": {"id": "m", "version": "2"}'));
+  assert.deepEqual(validateManifest(ok), []);
+});
+
+test('erratum 2026-11-15 (second part): a nested threshold renders by its spelling (G4)', () => {
+  assert.match(canonOf(baseJson('"metric_args": {"threshold": 1, "inner": {"threshold": 2.0}}'), 'json'),
+    /\n  inner:\n    threshold: 2\.0\n  threshold: 1\n/);
+});
+
+test('erratum 2026-11-15 (second part): lock requires created_at as YYYY-MM-DDTHH:MM:SSZ; hash still reads other spellings', () => {
+  const { newManifestErrors } = require('./falsify.js');
+  const m = parseManifest(baseJson().replace('"2026-05-01T12:00:00Z"', '"2026-05-01T12:00:00+00:00"'), 'json');
+  assert.deepEqual(validateManifest(m), []);
+  assert.match(newManifestErrors(m)[0], /YYYY-MM-DDTHH:MM:SSZ/);
+  assert.deepEqual(newManifestErrors(parseManifest(baseJson(), 'json')), []);
+});

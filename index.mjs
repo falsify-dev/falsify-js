@@ -7,6 +7,7 @@ import pkg from './index.js';
 export const canonicalize = pkg.canonicalize;
 export const manifestHash = pkg.manifestHash;
 export const validateManifest = pkg.validateManifest;
+export const newManifestErrors = pkg.newManifestErrors;
 export const evaluatePredicate = pkg.evaluatePredicate;
 export const needsQuoting = pkg.needsQuoting;
 export const loadManifest = pkg.loadManifest;

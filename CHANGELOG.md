@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+### Changed (PRML v0.1 erratum 2026-11-15, second part)
+- YAML mapping keys must be strings: `1:`, `true:`, `~:`, `1.5:` and sequence or mapping keys are rejected (js-yaml 4 and 5). Quote the key for a string.
+- U+FFFE, U+FFFF and U+10FFFF are rejected in any string or key.
+- Field types follow the published schema (`comparator: null`, `dataset: "x"` and similar are rejected); `model` is checked for its type only, as before.
+- `lock` requires `created_at` as `YYYY-MM-DDTHH:MM:SSZ`; `hash` and `verify` read any RFC 3339 spelling. `newManifestErrors(m)` is exported for library callers who lock.
+- A `threshold` key inside `metric_args` renders by its spelling (the float rule is for the root `threshold` only), as in the Python reference.
+
 ## [0.3.0] - 2026-11-15
 
 Follows the PRML v0.1 erratum of 2026-11-15 (falsify 0.6.0 on PyPI). CI runs the edge suite (108 vectors) and the reject suite (40) at the falsify release commit.
