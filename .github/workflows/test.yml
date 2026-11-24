@@ -12,7 +12,7 @@ env:
   # spec-repo change can never silently alter what this CI tests. Bump it
   # deliberately.
   #
-  SPEC_COMMIT: 3c81d53f7486d1f981203dcbed3366d73fe49f4c
+  SPEC_COMMIT: 90889a35311006508987c725a92c5f3a84d8879d
 
 jobs:
   test:
