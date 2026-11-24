@@ -268,18 +268,26 @@ const VALID_COMPARATORS = new Set(['>=', '<=', '>', '<', '==']);
 // refused for the same reason.
 const FORBIDDEN_CHARS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\ufeff\ufffe\uffff]|\udbff\udfff|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
 
+// Append without spreading: `target.push(...src)` passes every element as an argument and
+// overflows the call stack once src holds very many entries (a manifest of about 1 MB with
+// ~330,000 nested empty sequences threw RangeError at Node's default stack size).
+function pushAll(target, src) {
+  for (const x of src) target.push(x);
+  return target;
+}
+
 function badCharFields(obj, path = '') {
   const out = [];
   if (typeof obj === 'string') {
     if (FORBIDDEN_CHARS.test(obj)) out.push(path || '(value)');
   } else if (Array.isArray(obj)) {
-    obj.forEach((v, i) => out.push(...badCharFields(v, `${path}[${i}]`)));
+    obj.forEach((v, i) => pushAll(out, badCharFields(v, `${path}[${i}]`)));
   } else if (obj && typeof obj === 'object') {
     for (const [k, v] of Object.entries(obj)) {
       const child = path ? `${path}.${k}` : k;
       // A forbidden char in a KEY canonicalizes non-portably just as in a value.
       if (FORBIDDEN_CHARS.test(k)) out.push(`${child} (key)`);
-      out.push(...badCharFields(v, child));
+      pushAll(out, badCharFields(v, child));
     }
   }
   return out;
@@ -294,12 +302,12 @@ function nonNfcFields(obj, path = '') {
   if (typeof obj === 'string') {
     if (obj.normalize('NFC') !== obj) out.push(path || '(value)');
   } else if (Array.isArray(obj)) {
-    obj.forEach((v, i) => out.push(...nonNfcFields(v, `${path}[${i}]`)));
+    obj.forEach((v, i) => pushAll(out, nonNfcFields(v, `${path}[${i}]`)));
   } else if (obj && typeof obj === 'object') {
     for (const [k, v] of Object.entries(obj)) {
       const child = path ? `${path}.${k}` : String(k);
       if (k.normalize('NFC') !== k) out.push(`${child} (key)`);
-      out.push(...nonNfcFields(v, child));
+      pushAll(out, nonNfcFields(v, child));
     }
   }
   return out;
@@ -377,8 +385,8 @@ function validateManifest(m) {
     errors.push('notes must be a string of at most 4096 characters');
   }
   for (const k of Object.keys(m)) if (!TOP_KEYS.has(k)) errors.push(`${k}: unknown top-level field (schema additionalProperties: false)`);
-  errors.push(...structuralErrors(m));
-  errors.push(...typeErrors(m));
+  pushAll(errors, structuralErrors(m));
+  pushAll(errors, typeErrors(m));
   return errors;
 }
 

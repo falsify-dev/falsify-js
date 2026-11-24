@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-11-24
+
+### Fixed
+- `validateManifest` no longer throws `RangeError: Maximum call stack size exceeded` when a manifest produces a very long list of errors (for example about 330,000 nested empty sequences in a 1 MB file). Errors are appended one by one instead of spread into a single call. Accept and reject results, hashes and all conformance suites are unchanged; a regression test covers the case. Same change in `impl/js/falsify.js` in the spec repo.
+
 ## [0.4.1] - 2026-11-15
 
 Follows the third part of the PRML v0.1 erratum of 2026-11-15 (falsify 0.7.1 on PyPI); CI runs the 114-vector edge suite.

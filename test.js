@@ -314,3 +314,12 @@ test('erratum 2026-11-15 (third part): code is an optional mapping (spec §2.2)'
   assert.deepEqual(validateManifest(JSON.parse(baseJson('"code": {"id": "eval.py", "hash": "' + 'a'.repeat(64) + '"}'))), []);
   assert.ok(validateManifest(JSON.parse(baseJson('"code": "eval.py"'))).includes('code must be a mapping'));
 });
+
+test('a manifest with a very long error list validates without overflowing the call stack', () => {
+  // ~330,000 nested empty sequences (about 1 MB) give one structural error each.
+  // Before 0.4.2, `errors.push(...list)` threw RangeError at Node's default stack size.
+  const m = JSON.parse(baseJson('"x": [' + Array(330000).fill('[]').join(',') + ']'));
+  const errors = validateManifest(m);
+  assert.ok(errors.length > 330000);
+  assert.ok(errors.some(e => e.includes('a sequence inside a sequence')));
+});
