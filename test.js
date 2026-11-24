@@ -323,3 +323,14 @@ test('a manifest with a very long error list validates without overflowing the c
   assert.ok(errors.length > 330000);
   assert.ok(errors.some(e => e.includes('a sequence inside a sequence')));
 });
+
+test('erratum 2026-11-25: YAML anchors and aliases are rejected (spec §3.1)', () => {
+  for (const frag of ['a: &x 1\n  b: *x', 'a: &x 1', 'a: &x {b: 1}\n  c: *x', '&k a: 1', 'a: [&x 1, 2]']) {
+    assert.throws(() => parseManifest(BASE_YAML + `metric_args:\n  ${frag}\n`, 'yaml'), /anchors and aliases are not allowed/, frag);
+  }
+  assert.throws(() => parseManifest('--- &r\n' + BASE_YAML, 'yaml'), /anchors and aliases are not allowed/);
+  // & and * inside strings and comments are text, not anchors
+  const m = parseManifest(BASE_YAML + "metric_args:\n  a: '&x *x'\n  b: x &y *y\n# &z *z\n", 'yaml');
+  assert.equal(m.metric_args.a, '&x *x');
+  assert.equal(m.metric_args.b, 'x &y *y');
+});

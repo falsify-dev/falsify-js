@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-11-25
+
+Follows the PRML v0.1 erratum of 2026-11-25 (falsify 0.7.2 on PyPI).
+
+### Changed (PRML v0.1 erratum 2026-11-25)
+- YAML anchors (`&name`) and aliases (`*name`) are rejected, as spec §3.1 now requires of input (js-yaml 4 and 5). A file written with anchors that verified before is rejected until each alias is replaced by a copy of the node it refers to; the rewritten file has the same hash. `&` and `*` inside strings and comments are unaffected. CI runs the reject suite at 62 vectors.
+
 ## [0.4.2] - 2026-11-24
 
 ### Fixed

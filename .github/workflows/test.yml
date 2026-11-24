@@ -12,7 +12,7 @@ env:
   # spec-repo change can never silently alter what this CI tests. Bump it
   # deliberately.
   #
-  SPEC_COMMIT: 90889a35311006508987c725a92c5f3a84d8879d
+  SPEC_COMMIT: 6ba04f24df5d42b6460187e24543e7f99c21aa28
 
 jobs:
   test:
@@ -54,7 +54,7 @@ jobs:
 
         run: node falsify.js test-vectors vectors/edge/edge-vectors.json
 
-      - name: Reject suite (60 reject-vectors MUST be rejected)
+      - name: Reject suite (62 reject-vectors MUST be rejected)
         run: python3 vectors/reject/check_reject.py -- node falsify.js lock
 
       - name: CLI smoke test

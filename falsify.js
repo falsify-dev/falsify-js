@@ -689,9 +689,25 @@ function nonStringKeyListener(event, state) {
 
 // parseYamlStrict: js-yaml with the schema above; float markers are replaced by
 // plain Numbers and recorded in FLOAT_SPELLED; depth limited.
+// §3.1 (erratum 2026-11-25): a YAML manifest MUST NOT contain a node anchor or an
+// alias node (an alias needs an anchor, so rejecting anchors rejects both).
+const ANCHOR_MSG = 'YAML anchors and aliases are not allowed in a PRML manifest (§3.1)';
+
 function parseYamlStrict(yaml, text) {
   const opts = { schema: prmlYamlSchema(yaml) };
-  if (typeof yaml.defineScalarTag !== 'function') opts.listener = nonStringKeyListener;
+  if (typeof yaml.defineScalarTag !== 'function') {
+    // js-yaml 4: a node closes with state.anchor set when it carried an anchor.
+    opts.listener = (event, state) => {
+      if (event === 'close' && state.anchor !== null) throw new Error(ANCHOR_MSG);
+      nonStringKeyListener(event, state);
+    };
+  } else {
+    // js-yaml 5: check the event stream before the document is built.
+    for (const ev of yaml.parseEvents(text, {})) {
+      if (ev.type === yaml.EVENT_ID.ALIAS || (ev.anchorStart !== undefined && ev.anchorStart !== -1)) throw new Error(ANCHOR_MSG);
+    }
+    opts.maxAliases = 0;
+  }
   const doc = yaml.load(text, opts);
   const seen = new Set();
   (function walk(o, depth) {
